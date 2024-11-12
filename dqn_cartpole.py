@@ -18,7 +18,7 @@ ic(device)
 device = "cpu"
 
 
-ACTOR_MODEL_FILE = "./models/dqn_cartpole.pth"
+ACTOR_MODEL_FILE = "./models/dqn_cartpole_optimized.pth"
 
 _env_kwargs = {
     "render_mode": "human"
@@ -71,7 +71,7 @@ q_net = QNetwork(action_spec_size, device=device).train()
 
 exploration_eps = 1.0
 min_exploration_eps = 0.0
-exploration_decay = 0.994
+exploration_decay = 0.99
 is_training = True
 if "render_mode" in _env_kwargs and _env_kwargs["render_mode"] == "human":
     q_net.eval()
@@ -89,6 +89,8 @@ target_q_net.load_state_dict(q_net.state_dict().copy())
 
 optimizer = torch.optim.Adam(
     q_net.parameters(), lr=0.001)
+optimizer_scheduler = torch.optim.lr_scheduler.ExponentialLR(
+    optimizer=optimizer, gamma=0.999)
 
 
 reward_history = []
@@ -113,10 +115,7 @@ def select_action(observation: TensorDict, eps: float, differentiable=False):
     return action
 
 
-mse = nn.MSELoss()
-
-
-def optimize_q_net(q_net: QNetwork, target_q_net: QNetwork, sample: TensorDict, update_target_net: bool, gamma=0.99, tau=0.01):
+def optimize_q_net(q_net: QNetwork, target_q_net: QNetwork, sample: TensorDict, update_target_net: bool, gamma=0.99, tau=0.01, l1_beta=1.0):
     with torch.no_grad():
         non_terminal_coef = (sample["done"] == False).to(dtype=torch.float32)
         target_q_values = target_q_net(
@@ -131,17 +130,19 @@ def optimize_q_net(q_net: QNetwork, target_q_net: QNetwork, sample: TensorDict, 
 
     q_values: torch.Tensor = q_net(sample["observation"])
     selected_q_values = q_values.gather(-1, sample["action"])
-    loss = F.smooth_l1_loss(selected_q_values, target_q_values)
+    td: torch.Tensor = selected_q_values - target_q_values
+    loss = F.smooth_l1_loss(selected_q_values, target_q_values, beta=l1_beta)
+
     loss.backward()
     optimizer.step()
     if update_target_net:
         soft_update(target_q_net, q_net, tau)
 
-    td: torch.Tensor = selected_q_values - target_q_values
     return (loss, td.squeeze().abs().detach())
 
 
 max_reward_ever = 0
+losses_history = []
 
 for episode in range(2000):
     obs, _ = env.reset()
@@ -192,21 +193,29 @@ for episode in range(2000):
     loss = None
     if is_training and len(rb) >= 256:
         sample, info = rb.sample(256, return_info=True)
+        avg10_loss = sum(losses_history) / \
+            len(losses_history) if len(losses_history) > 0 else 1.0
+
         loss, priorities = optimize_q_net(
             q_net,
             target_q_net,
             sample.to(device=device),
             update_target_net=episode % 8 == 0,
-            tau=0.005
+            tau=0.005,
+            l1_beta=avg10_loss
         )
         rb.update_priority(info["index"], priorities)
+        losses_history.append(loss.item())
+        if len(losses_history) > 10:
+            losses_history = losses_history[-10:]
+        optimizer_scheduler.step()
 
     with torch.no_grad():
         avg_loss = round(loss.item(), 4) if loss != None else 0
         total_reward = round(total_reward, 4)
 
     print(
-        f"Episode #{episode} (Max steps : {t}) | Avg Loss : {avg_loss} | Total Reward : {total_reward} | E-Greedy epsilon : {round(exploration_eps, ndigits=2)}")
+        f"Episode #{episode} (Max steps : {t}) | Avg Loss : {avg_loss} | Total Reward : {total_reward} | E-Greedy epsilon : {round(exploration_eps, ndigits=2)} | LR : {optimizer_scheduler.get_last_lr()[0]:8f}")
 
     if avg_loss > 0:
         loss_history.append(avg_loss)
