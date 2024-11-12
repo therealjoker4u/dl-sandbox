@@ -18,7 +18,7 @@ ic(device)
 device = "cpu"
 
 
-ACTOR_MODEL_FILE = "./models/dqn_cartpole.pth"
+ACTOR_MODEL_FILE = "./models/dqn_cartpole_sb.pth"
 
 _env_kwargs = {
     "render_mode": "human"
@@ -71,7 +71,7 @@ q_net = QNetwork(action_spec_size, device=device).train()
 
 exploration_eps = 1.0
 min_exploration_eps = 0.0
-exploration_decay = 0.994
+exploration_decay = 0.998
 is_training = True
 if "render_mode" in _env_kwargs and _env_kwargs["render_mode"] == "human":
     q_net.eval()
@@ -122,8 +122,8 @@ def optimize_q_net(q_net: QNetwork, target_q_net: QNetwork, sample: TensorDict, 
         target_q_values = target_q_net(
             sample["next", "observation"]).max(dim=-1).values
 
-        target_q_values = sample["next", "reward"] + \
-            (gamma * target_q_values * non_terminal_coef)
+        target_q_values = gamma * target_q_values * non_terminal_coef
+        target_q_values += sample["next", "reward"]
 
         target_q_values = target_q_values.unsqueeze(-1)
 
@@ -162,7 +162,7 @@ for episode in range(2000):
 
         if is_training:
             next = TensorDict(
-                {"observation": obs_next}, device=device)
+                {"observation": obs_next, "reward": torch.tensor(-1 if done else 0, dtype=torch.float32, device=device)}, device=device)
 
             transition = TensorDict({
                 "action": action,
@@ -170,8 +170,7 @@ for episode in range(2000):
                 "done": torch.tensor(done, dtype=torch.bool, device=device),
                 "next": next,
             }, device=device)
-
-            transitions.append(transition)
+            rb.add(transition)
 
         obs = obs_next
 
@@ -183,11 +182,6 @@ for episode in range(2000):
         max_reward_ever = total_reward
     if is_training:
         torch.save(q_net.state_dict(), ACTOR_MODEL_FILE)
-
-    for transition in transitions:
-        transition["next", "reward"] = torch.tensor(
-            total_reward, dtype=torch.float32, device=device)
-        rb.add(transition)
 
     loss = None
     if is_training and len(rb) >= 256:
@@ -220,7 +214,7 @@ for episode in range(2000):
     ax2.set_title("Total Reward")
 
     plt.tight_layout()
-    plt.savefig("./.tmp/dqn_cartpole.png")
+    plt.savefig("./.tmp/dqn_cartpole_sb.png")
     plt.close()
 
     if exploration_eps > min_exploration_eps:
