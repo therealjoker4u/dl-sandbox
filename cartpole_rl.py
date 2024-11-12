@@ -4,6 +4,7 @@ import torch.optim as optim
 import gym
 import numpy as np
 
+
 class PolicyNetwork(nn.Module):
     def __init__(self, state_dim, action_dim):
         super(PolicyNetwork, self).__init__()
@@ -15,7 +16,7 @@ class PolicyNetwork(nn.Module):
         x = torch.relu(self.fc1(x))
         x = self.fc2(x)
         return self.softmax(x)
-    
+
 
 env = gym.make('CartPole-v1', render_mode="human")
 
@@ -23,12 +24,14 @@ env = gym.make('CartPole-v1', render_mode="human")
 policy_net = PolicyNetwork(state_dim=4, action_dim=2)
 optimizer = optim.Adam(policy_net.parameters(), lr=1e-2)
 
+
 def select_action(policy_net, state):
     state = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
     probs = policy_net(state)
     m = torch.distributions.Categorical(probs)
     action = m.sample()
     return action.item(), m.log_prob(action)
+
 
 def finish_episode(saved_log_probs, rewards, gamma=0.99):
     R = 0
