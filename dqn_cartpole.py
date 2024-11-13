@@ -206,7 +206,7 @@ for episode in range(2000):
             target_q_net,
             sample.to(device=device),
             update_target_net=True,
-            tau=0.001,
+            tau=0.005,
             l1_beta=avg10_loss
         )
         rb.update_priority(info["index"], priorities)
