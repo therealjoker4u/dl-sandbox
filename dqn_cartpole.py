@@ -18,7 +18,7 @@ ic(device)
 device = "cpu"
 
 
-ACTOR_MODEL_FILE = "./models/dqn_cartpole_optimized.pth"
+ACTOR_MODEL_FILE = "./models/dqn_cartpole_double.pth"
 
 _env_kwargs = {
     "render_mode": "human"
@@ -88,7 +88,7 @@ target_q_net = QNetwork(action_spec_size, device=device).eval()
 target_q_net.load_state_dict(q_net.state_dict().copy())
 
 optimizer = torch.optim.Adam(
-    q_net.parameters(), lr=0.001)
+    q_net.parameters(), lr=0.01)
 optimizer_scheduler = torch.optim.lr_scheduler.ExponentialLR(
     optimizer=optimizer, gamma=0.999)
 
@@ -96,8 +96,8 @@ optimizer_scheduler = torch.optim.lr_scheduler.ExponentialLR(
 reward_history = []
 loss_history = []
 rb = PrioritizedReplayBuffer(
-    alpha=0.6,
-    beta=0.6,
+    alpha=0.3,
+    beta=0.3,
     storage=LazyTensorStorage(max_size=10000, device=device)
 )
 
@@ -117,13 +117,17 @@ def select_action(observation: TensorDict, eps: float, differentiable=False):
 
 def optimize_q_net(q_net: QNetwork, target_q_net: QNetwork, sample: TensorDict, update_target_net: bool, gamma=0.99, tau=0.01, l1_beta=1.0):
     with torch.no_grad():
+        obs = sample["next", "observation"]
         non_terminal_coef = (sample["done"] == False).to(dtype=torch.float32)
-        target_q_values = target_q_net(
-            sample["next", "observation"]).max(dim=-1).values
+        # Online Q values are the greedy values calculated directly by q_net
+        online_q_values: torch.Tensor = q_net(obs)
+
+        # An offline set of Q Values calculated by a delayed offline network (target_q_net) based on the argmax indicies of online_q_values
+        fair_q_values = target_q_net(
+            obs).gather(-1, online_q_values.argmax(dim=-1).unsqueeze(1)).squeeze(-1)
 
         target_q_values = sample["next", "reward"] + \
-            (gamma * target_q_values * non_terminal_coef)
-
+            (gamma * fair_q_values * non_terminal_coef)
         target_q_values = target_q_values.unsqueeze(-1)
 
     optimizer.zero_grad()
@@ -134,6 +138,7 @@ def optimize_q_net(q_net: QNetwork, target_q_net: QNetwork, sample: TensorDict, 
     loss = F.smooth_l1_loss(selected_q_values, target_q_values, beta=l1_beta)
 
     loss.backward()
+    nn.utils.clip_grad_norm_(q_net.parameters(), 1.0)
     optimizer.step()
     if update_target_net:
         soft_update(target_q_net, q_net, tau)
@@ -200,8 +205,8 @@ for episode in range(2000):
             q_net,
             target_q_net,
             sample.to(device=device),
-            update_target_net=episode % 8 == 0,
-            tau=0.005,
+            update_target_net=True,
+            tau=0.001,
             l1_beta=avg10_loss
         )
         rb.update_priority(info["index"], priorities)
@@ -221,16 +226,20 @@ for episode in range(2000):
         loss_history.append(avg_loss)
         reward_history.append(total_reward)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
-    ax1.plot(range(len(loss_history)), loss_history)
-    ax1.set_title("Avg Loss")
+    if is_training:
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+        ax1.plot(range(len(loss_history)), loss_history)
+        ax1.set_title("Avg Loss")
 
-    ax2.plot(range(len(reward_history)), reward_history)
-    ax2.set_title("Total Reward")
+        ax2.plot(range(len(reward_history)), reward_history)
+        ax2.set_title("Total Reward")
 
-    plt.tight_layout()
-    plt.savefig("./.tmp/dqn_cartpole.png")
-    plt.close()
+        plt.tight_layout()
+        plt.savefig("./.tmp/dqn_cartpole.png")
+        plt.close()
+
+    # if total_reward >= 500:
+    #     break
 
     if exploration_eps > min_exploration_eps:
         exploration_eps *= exploration_decay
