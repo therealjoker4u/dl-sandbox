@@ -98,8 +98,11 @@ rb = ReplayBuffer(
 
 def select_action(observation: TensorDict, differentiable=False):
     y: torch.Tensor = policy(observation)
-    dist = torch.distributions.Categorical(y)
-    action = dist.sample((1, ))
+    if is_training:
+        dist = torch.distributions.Categorical(y)
+        action = dist.sample((1, ))
+    else:
+        action = y.argmax(-1, keepdim=True)
     return action
 
 
